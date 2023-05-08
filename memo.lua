@@ -10,7 +10,7 @@ local options = {
     entries = 10,
 
     -- Display navigation to older/newer entries
-    pagination = true,
+    pagination = false,
 
     -- Display files only once
     hide_duplicates = true,
@@ -369,12 +369,17 @@ function show_history(entries, next_page, prev_page, update, return_items)
         known_dirs = {},
         known_files = {},
         existing_files = {},
-        cursor = history:seek("end"),
+        lines = {},
         retry = 0,
         pages = {},
         current_page = 1
     }
 
+    history:seek("set")
+    for line in history:lines() do
+        table.insert(state.lines, line)
+    end
+    
     if update then
         state.pages = {}
     end
@@ -409,38 +414,8 @@ function show_history(entries, next_page, prev_page, update, return_items)
 
     -- all of these error cases can only happen if the user messes with the history file externally
     local function read_line()
-        history:seek("set", state.cursor - max_digits_length)
-        local tail = history:read(max_digits_length)
-        if not tail then
-            mp.msg.debug("error could not read entry length @ " .. state.cursor - max_digits_length)
-            return
-        end
-
-        local entry_length_str, whitespace = tail:match("(%d+)(%s*)$")
-        if not entry_length_str then
-            mp.msg.debug("invalid entry length @ " .. state.cursor)
-            state.cursor = math.max(state.cursor - retry_offset, 0)
-            history:seek("set", state.cursor)
-            local retry = history:read(retry_offset)
-            local last_valid = string.match(retry, ".*(%d+\n.*)")
-            local offset = last_valid and #last_valid or retry_offset
-            state.cursor = state.cursor + retry_offset - offset + 1
-            if state.cursor == state.retry then
-                mp.msg.debug("bailing")
-                state.cursor = 0
-                return
-            end
-            state.retry = state.cursor
-            mp.msg.debug("retrying @ " .. state.cursor)
-            return
-        end
-
-        local entry_length = tonumber(entry_length_str)
-        state.cursor = state.cursor - entry_length - #entry_length_str - #whitespace - 1
-        history:seek("set", state.cursor)
-
-        local entry = history:read(entry_length)
-        local timestamp_str, title_length_str, file_info = entry:match("([^,]*),(%d*),(.*)")
+        local line = table.remove(state.lines)
+        local timestamp_str, _, title, full_path, _ = line:match("(.*),(.*),(.*),(.*),(.*)")
         if not timestamp_str then
             mp.msg.debug("invalid entry data @ " .. state.cursor)
             return
@@ -450,12 +425,10 @@ function show_history(entries, next_page, prev_page, update, return_items)
         timestamp = timestamp and os.date(options.timestamp_format, timestamp) or timestamp_str
 
         local title_length = title_length_str ~= "" and tonumber(title_length_str) or 0
-        local full_path = file_info:sub(title_length + 2)
 
         if options.hide_duplicates and state.known_files[full_path] then
             return
         end
-
         local dirname, basename
 
         if full_path:find("^%a[%a%d-_]+:") ~= nil then
@@ -485,7 +458,6 @@ function show_history(entries, next_page, prev_page, update, return_items)
             end
         end
 
-        local title = file_info:sub(1, title_length)
         if not options.use_titles then
             title = ""
         end
@@ -532,7 +504,7 @@ function show_history(entries, next_page, prev_page, update, return_items)
     local attempts = 0
 
     while #menu_items < entries do
-        if state.cursor - max_digits_length <= 0 then
+        if #state.lines == 0 then
             break
         end
 
@@ -542,7 +514,6 @@ function show_history(entries, next_page, prev_page, update, return_items)
                 draw_menu()
             end
         end
-
         if not return_items and attempts > 0 and attempts % options.entries == 0 and #menu_items ~= item_count then
             item_count = #menu_items
             local temp_items = {unpack(menu_items)}
@@ -578,7 +549,7 @@ function show_history(entries, next_page, prev_page, update, return_items)
     end
 
     if options.pagination and #menu_items > 0 then
-        if state.cursor - max_digits_length > 0 then
+        if #state.lines > 0 then
             table.insert(menu_items, {title = "Older entries", value = {"script-binding", "memo-next"}, italic = "true", muted = "true", icon = "navigate_next", keep_open = true})
         end
         if state.current_page ~= 1 then
